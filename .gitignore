@@ -1,0 +1,11 @@
+__pycache__/
+*.py[cod]
+.env
+venv/
+vector_db/
+raw_*.txt
+documents/
+*.pdf
+.DS_Store
+wp-config.php
+node_modules/

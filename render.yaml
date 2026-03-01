@@ -1,0 +1,18 @@
+services:
+  - type: web
+    name: yourplace-chatbot-api
+    runtime: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: gunicorn api_server:app --workers 1 --timeout 120 --bind 0.0.0.0:$PORT
+    plan: starter          # $7/month — needed for persistent disk + no sleep
+    envVars:
+      - key: OPENAI_API_KEY
+        sync: false        # You set this manually in Render dashboard
+      - key: ADMIN_KEY
+        sync: false        # Set a strong secret password here
+      - key: DB_PATH
+        value: /data/vector_db
+    disk:
+      name: chatbot-data
+      mountPath: /data
+      sizeGB: 1
