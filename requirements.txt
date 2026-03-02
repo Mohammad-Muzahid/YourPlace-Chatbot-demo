@@ -4,7 +4,6 @@ gunicorn==21.2.0
 PyPDF2==3.0.1
 numpy==1.26.4
 chromadb==0.5.23
-sentence-transformers==2.7.0
 requests==2.31.0
 beautifulsoup4==4.12.2
 trafilatura==1.6.3

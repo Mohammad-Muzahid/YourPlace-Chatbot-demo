@@ -12,7 +12,6 @@ import requests
 from pathlib import Path
 from PyPDF2 import PdfReader
 import chromadb
-from sentence_transformers import SentenceTransformer
 import hashlib
 import time
 import urllib3
@@ -35,7 +34,6 @@ class RAGProcessor:
         self.openai_url     = 'https://api.openai.com/v1/chat/completions'
         os.makedirs(self.db_path, exist_ok=True)
         self.chroma_client       = chromadb.PersistentClient(path=self.db_path)
-        self.embedding_model     = SentenceTransformer('all-MiniLM-L6-v2')
         self.all_docs_collection = 'all_company_documents'
         if self.openai_api_key:
             print(f'  ✅ AI Backend: OpenAI {self.openai_model}')
@@ -635,17 +633,45 @@ class RAGProcessor:
     # ─────────────────────────────────────────────
 
     def create_embeddings(self, chunks):
-        print("🔧 Creating embeddings...")
-        embeddings = []
+        """Use OpenAI text-embedding-3-small — fast, cheap, no local GPU needed."""
+        print("🔧 Creating embeddings via OpenAI...")
         texts = [chunk['text'] for chunk in chunks]
-        batch_size = 16
+        embeddings = []
+        batch_size = 100  # OpenAI allows up to 2048 inputs per call
         for i in range(0, len(texts), batch_size):
             batch = texts[i:i+batch_size]
-            embeddings.extend(self.embedding_model.encode(batch).tolist())
+            response = requests.post(
+                'https://api.openai.com/v1/embeddings',
+                headers={
+                    'Authorization': f'Bearer {self.openai_api_key}',
+                    'Content-Type': 'application/json'
+                },
+                json={'model': 'text-embedding-3-small', 'input': batch},
+                timeout=60
+            )
+            if response.status_code != 200:
+                raise Exception(f"Embedding API error: {response.status_code} {response.text}")
+            data = response.json()
+            batch_embeddings = [item['embedding'] for item in data['data']]
+            embeddings.extend(batch_embeddings)
             done = min(i+batch_size, len(texts))
-            if done % 50 == 0 or done == len(texts):
-                print(f"  📊 {done}/{len(texts)} embeddings...")
+            print(f"  📊 {done}/{len(texts)} embeddings...")
         return embeddings
+
+    def _embed_query(self, text):
+        """Embed a single query string using OpenAI."""
+        response = requests.post(
+            'https://api.openai.com/v1/embeddings',
+            headers={
+                'Authorization': f'Bearer {self.openai_api_key}',
+                'Content-Type': 'application/json'
+            },
+            json={'model': 'text-embedding-3-small', 'input': text},
+            timeout=30
+        )
+        if response.status_code != 200:
+            raise Exception(f"Embedding API error: {response.status_code}")
+        return response.json()['data'][0]['embedding']
 
     def add_to_vector_database(self, chunks, source_name, source_type='pdf'):
         print(f"🔧 Adding {len(chunks)} chunks to vector database...")
@@ -701,7 +727,7 @@ class RAGProcessor:
             return None
 
         safe_n = max(1, min(n_results, count))
-        question_embedding = self.embedding_model.encode(question).tolist()
+        question_embedding = self._embed_query(question)
         results = collection.query(
             query_embeddings=[question_embedding],
             n_results=safe_n,
