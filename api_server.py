@@ -1,7 +1,6 @@
 """
 Flask API wrapper for the RAG Processor.
-Exposes the chatbot as HTTP endpoints so WordPress (or any client)
-can call it from anywhere — no local Python execution needed.
+Uses /tmp for storage (compatible with Render free tier).
 """
 
 from flask import Flask, request, jsonify
@@ -9,22 +8,24 @@ from flask_cors import CORS
 import os
 import sys
 import traceback
-import hashlib
 import tempfile
 
-# Add current directory to path so rag_processor can be imported
 sys.path.insert(0, os.path.dirname(__file__))
 from rag_processor import RAGProcessor
 
 app = Flask(__name__)
-CORS(app)  # Allow WordPress to call from any domain
+CORS(app)
 
-# ── Config from environment variables ────────────────────────────────────────
 OPENAI_API_KEY = os.environ.get('OPENAI_API_KEY', '')
 ADMIN_KEY      = os.environ.get('ADMIN_KEY', 'change-this-secret')
-DB_PATH        = os.environ.get('DB_PATH', '/data/vector_db')  # Render persistent disk
 
-# Single shared processor instance (loads embedding model once at startup)
+# Use /tmp which is always writable on Render free tier
+# NOTE: /tmp is ephemeral — data resets on restart.
+# After each restart you need to re-upload PDFs.
+# Upgrade to paid plan ($7/mo) to get persistent disk.
+DB_PATH = os.environ.get('DB_PATH', '/tmp/vector_db')
+os.makedirs(DB_PATH, exist_ok=True)
+
 processor = None
 
 def get_processor():
@@ -39,19 +40,22 @@ def get_processor():
     return processor
 
 
-# ── Health check ──────────────────────────────────────────────────────────────
+@app.route('/', methods=['GET'])
+def index():
+    return jsonify({
+        'service': 'YourPlace Chatbot API',
+        'status': 'running',
+        'endpoints': ['/health', '/query', '/process-pdf', '/process-website', '/stats']
+    })
+
+
 @app.route('/health', methods=['GET'])
 def health():
     return jsonify({'status': 'ok', 'message': 'Chatbot API is running'})
 
 
-# ── Main query endpoint (called by WordPress) ─────────────────────────────────
 @app.route('/query', methods=['POST'])
 def query():
-    """
-    WordPress sends: { "question": "...", "context": "..." }
-    Returns:         { "answer": "..." }
-    """
     try:
         data     = request.get_json(force=True) or {}
         question = data.get('question', '').strip()
@@ -74,13 +78,8 @@ def query():
         return jsonify({'error': str(e), 'answer': 'Something went wrong. Please try again.'}), 500
 
 
-# ── PDF upload + processing (admin only) ──────────────────────────────────────
 @app.route('/process-pdf', methods=['POST'])
 def process_pdf():
-    """
-    Upload and process a PDF file.
-    Requires X-Admin-Key header matching ADMIN_KEY env var.
-    """
     if request.headers.get('X-Admin-Key') != ADMIN_KEY:
         return jsonify({'error': 'Unauthorized'}), 401
 
@@ -91,8 +90,7 @@ def process_pdf():
     if not file.filename.endswith('.pdf'):
         return jsonify({'error': 'Only PDF files accepted'}), 400
 
-    # Save to temp location and process
-    with tempfile.NamedTemporaryFile(suffix='.pdf', delete=False) as tmp:
+    with tempfile.NamedTemporaryFile(suffix='.pdf', delete=False, dir='/tmp') as tmp:
         file.save(tmp.name)
         tmp_path = tmp.name
 
@@ -111,7 +109,6 @@ def process_pdf():
         return jsonify({'error': str(e)}), 500
 
 
-# ── Website training (admin only) ─────────────────────────────────────────────
 @app.route('/process-website', methods=['POST'])
 def process_website():
     if request.headers.get('X-Admin-Key') != ADMIN_KEY:
@@ -131,7 +128,6 @@ def process_website():
         return jsonify({'error': str(e)}), 500
 
 
-# ── Stats (admin only) ────────────────────────────────────────────────────────
 @app.route('/stats', methods=['GET'])
 def stats():
     if request.headers.get('X-Admin-Key') != ADMIN_KEY:
@@ -144,7 +140,6 @@ def stats():
         return jsonify({'error': str(e)}), 500
 
 
-# ── Clear database (admin only) ───────────────────────────────────────────────
 @app.route('/clear', methods=['POST'])
 def clear():
     if request.headers.get('X-Admin-Key') != ADMIN_KEY:
